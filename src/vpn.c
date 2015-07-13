@@ -294,6 +294,7 @@ int vpn_raw_alloc(int is_server, const char *host, int port,
   struct addrinfo hints;
   struct addrinfo *res;
   int sock, r;
+  struct sock_fprog bpf;
 
   memset(&hints, 0, sizeof(hints));
   hints.ai_socktype = SOCK_STREAM;
@@ -325,55 +326,87 @@ int vpn_raw_alloc(int is_server, const char *host, int port,
     return -1;
   }
 
-
-  //bpf here
-  int port_offset;
-  if (is_server) {
-    if (res->ai_family == AF_INET) //TODO: add ipv6 support
-      port_offset = 22;
-  } else {
-    if (res->ai_family == AF_INET)
-      port_offset = 20;
-  }
-
-   if (is_server) {
-     struct sock_filter code[] = {
-       { 0x28,  0,  0, port_offset },
-       { 0x15,  0,  1, port },
-       { 0x06,  0,  0, 0x0000ffff },
-       { 0x06,  0,  0, 0000000000 },
-     };
-      struct sock_fprog bpf = {
-      .len = ARRAY_SIZE(code),
-      .filter = code,
-      };
-      if (-1 == setsockopt(sock, SOL_SOCKET, SO_ATTACH_FILTER, &bpf, sizeof(bpf))) {
-        err("filter");
-        errf("can not attach filter");
-        freeaddrinfo(res);
-        return -1;
+  if (res->ai_family == AF_INET) {
+  	if (is_server) {
+  		struct sock_filter filter[] = {
+			BPF_STMT(BPF_LDX + BPF_B + BPF_MSH, 0),				//packet header len
+			BPF_STMT(BPF_LD + BPF_H + BPF_IND, 2),				//load dst port
+			BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, 0, 1, port),
+			BPF_STMT(BPF_RET + BPF_K, 0x0000ffff),
+			BPF_STMT(BPF_RET + BPF_K, 0),
+		};
+		bpf.len = ARRAY_SIZE(filter);
+		bpf.filter = filter;
+		bpf.filter = filter;
+		if (-1 == setsockopt(sock, SOL_SOCKET, SO_ATTACH_FILTER, &bpf, sizeof(bpf))) {
+			err("filter");
+			errf("can not attach filter");
+			freeaddrinfo(res);
+			return -1;
+		}
+	} else {
+		struct sock_filter filter[] = {
+			BPF_STMT(BPF_LDX + BPF_B + BPF_MSH, 0),				//packet header len
+			BPF_STMT(BPF_LD + BPF_H + BPF_IND, 0),				//load src port
+			BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, port, 0, 3),
+      		BPF_STMT(BPF_LD + BPF_W + BPF_ABS, 12),				//load ip
+      		BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, ntohl(((struct sockaddr_in *)res->ai_addr)->sin_addr.s_addr), 0, 1),
+      		BPF_STMT(BPF_RET + BPF_K, 0x0000ffff),
+      		BPF_STMT(BPF_RET + BPF_K, 0),
+      	};
+      	bpf.len = ARRAY_SIZE(filter);
+      	bpf.filter = filter;
+      	bpf.filter = filter;
+      	if (-1 == setsockopt(sock, SOL_SOCKET, SO_ATTACH_FILTER, &bpf, sizeof(bpf))) {
+      		err("filter");
+      		errf("can not attach filter");
+      		freeaddrinfo(res);
+      		return -1;
+      	}
       }
-   } else {
-     struct sock_filter code[] = {
-      { 0x28,  0,  0, port_offset },
-      { 0x15,  0,  3, port },
-      { 0x20,  0,  0, 0x0000000c },
-      { 0x15,  0,  1, ntohl(((struct sockaddr_in *)res->ai_addr)->sin_addr.s_addr) }, //TODO add ipv6 support
-      { 0x06,  0,  0, 0x0000ffff },
-      { 0x06,  0,  0, 0000000000 },
-     };
-     struct sock_fprog bpf = {
-       .len = ARRAY_SIZE(code),
-       .filter = code,
-     };
-     if (-1 == setsockopt(sock, SOL_SOCKET, SO_ATTACH_FILTER, &bpf, sizeof(bpf))) {
-       err("filter");
-       errf("can not attach filter");
-       freeaddrinfo(res);
-       return -1;
-     }
-   }
-
+  } else if (res->ai_family == AF_INET6) {
+  	if (is_server) {
+  		struct sock_filter filter[] = {
+  			BPF_STMT(BPF_LD + BPF_H + BPF_ABS, 42),				//load dst port
+  			BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, port, 0, 1),
+  			BPF_STMT(BPF_RET + BPF_K, 0x0000ffff),
+  			BPF_STMT(BPF_RET + BPF_K, 0),
+  		};
+  		bpf.len = ARRAY_SIZE(filter);
+  		bpf.filter = filter;
+  		if (-1 == setsockopt(sock, SOL_SOCKET, SO_ATTACH_FILTER, &bpf, sizeof(bpf))) {
+  			err("filter");
+  			errf("can not attach filter");
+  			freeaddrinfo(res);
+  			return -1;
+  		}
+  	} else {
+  		uint32_t *ipaddr = (uint32_t *)&(((struct sockaddr_in6 *)res->ai_addr)->sin6_addr.s6_addr);
+  		struct sock_filter filter[] = {
+  			BPF_STMT(BPF_LD + BPF_H + BPF_ABS, 40),						//load src port
+  			BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, port, 0, 9),
+  			BPF_STMT(BPF_LD+BPF_W+BPF_ABS, 8),							//load ip
+  			BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K,ntohl(*ipaddr), 0, 7),
+  			BPF_STMT(BPF_LD+BPF_W+BPF_ABS, 16),							//load ip
+  			BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K,ntohl(*(ipaddr + 1)), 0, 5),
+  			BPF_STMT(BPF_LD+BPF_W+BPF_ABS, 24),							//load ip
+  			BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K,ntohl(*(ipaddr + 2)), 0, 3),
+  			BPF_STMT(BPF_LD+BPF_W+BPF_ABS, 32),							//load ip
+  			BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K,ntohl(*(ipaddr + 3)), 0, 1),
+  			BPF_STMT(BPF_RET + BPF_K, 0x0000ffff),
+  			BPF_STMT(BPF_RET + BPF_K, 0),
+  		};
+  		bpf.len = ARRAY_SIZE(filter);
+  		bpf.filter = filter;
+  		bpf.filter = filter;
+  		if (-1 == setsockopt(sock, SOL_SOCKET, SO_ATTACH_FILTER, &bpf, sizeof(bpf))) {
+  			err("filter");
+  			errf("can not attach filter");
+  			freeaddrinfo(res);
+  			return -1;
+  		}
+  	}
+  }
 
   freeaddrinfo(res);
 
