@@ -8,7 +8,7 @@ When running on TCP mode, the program will send packets with forged TCP header.
  - You cannot use it in conjunction with shadowvpn built from master branch.
 
 When running on UDP mode, the program will send and receive packets with raw
-udp header. You can use it in conjunction with shadowvpn built from master branch.
+udp header.
 
 [![Build Status]][Travis CI]
 
