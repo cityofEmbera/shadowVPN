@@ -128,10 +128,18 @@ static int process_key_value(shadowvpn_args_t *args, const char *key,
   } else if (strcmp("password", key) == 0) {
     args->password = strdup(value);
   } else if (strcmp("mode", key) == 0) {
-    if (strcmp("server", value) == 0) {
+    if (strcmp("server+tcp", value) == 0) {
       args->mode = SHADOWVPN_MODE_SERVER;
-    } else if (strcmp("client", value) == 0) {
+      args->tcp_mode = 1;
+    } else if (strcmp("server+tcp", value) == 0) {
+      args->mode = SHADOWVPN_MODE_SERVER;
+      args->tcp_mode = 0;
+    } else if (strcmp("client+tcp", value) == 0) {
       args->mode = SHADOWVPN_MODE_CLIENT;
+      args->tcp_mode = 1;
+    } else if (strcmp("client+udp", value) == 0) {
+      args->mode = SHADOWVPN_MODE_CLIENT;
+      args->tcp_mode = 0;
     } else {
       errf("warning: unknown mode in config file: %s", value);
       return -1;

@@ -1,6 +1,15 @@
 ShadowVPN
 =========
-TCP Fake Header Mode Only!!
+Can be ran in TCP mode or UDP mode.
+When running on TCP mode, the program will send packets with forged TCP header.
+
+**Caveat:**
+ - Because the program sends SYN/ACK packets with payloads without establishing TCP connection in this mode, some VPS providers may treat this behavior as DDoS attacks.
+ - You cannot use it in conjunction with shadowvpn built from master branch.
+
+When running on UDP mode, the program will send and receive packets with raw
+udp header. You can use it in conjunction with shadowvpn built from master branch.
+
 [![Build Status]][Travis CI]
 
 [中文说明][Chinese Readme]
@@ -20,7 +29,7 @@ Install
 
 For Debian 7 and Ubuntu 12+, add the following line to `/etc/apt/sources.list`
 
-    deb http://shadowvpn.org/debian wheezy main
+    deb https://shadowvpn.org/debian wheezy main
 
 Then
 

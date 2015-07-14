@@ -39,6 +39,7 @@ typedef enum {
 
 typedef struct {
   shadowvpn_mode mode;
+  int tcp_mode;
   shadowvpn_cmd cmd;
   const char *conf_file;
   const char *pid_file;

@@ -33,11 +33,6 @@
 #endif
 #include "args.h"
 
-#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]) + __must_be_array(arr))
-#define __must_be_array(a) BUILD_BUG_ON_ZERO(__same_type((a), &(a)[0]))
-#define __same_type(a, b) __builtin_types_compatible_p(typeof(a), typeof(b))
-#define BUILD_BUG_ON_ZERO(e) (sizeof(struct { int:-!!(e); }))
-
 typedef struct {
   int running;
   int sock;
@@ -58,7 +53,7 @@ typedef struct {
 } vpn_ctx_t;
 
 uint32_t xorshift32(uint32_t *a);
-int vpn_raw_alloc(int is_server, const char *host, int port,
+int vpn_raw_alloc(int is_server, int tcp_mode, const char *host, int port,
                   struct sockaddr *addr, socklen_t* addrlen);
 
 int set_nonblock(int sock);

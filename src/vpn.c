@@ -56,6 +56,7 @@
 
 //for raw packet
 #include <netinet/tcp.h>
+  #include <netinet/udp.h>
 #include <netinet/ip6.h>
 #include <netinet/ip.h>
 //bpf filter
@@ -100,13 +101,13 @@
 
 #endif
 
-int is_ipv6;
-
 uint32_t xorshift32(uint32_t *a) {
   uint32_t state = *a;
-  state ^= (state << 13);
-  state ^= (state >> 17);
-  state ^= (state <<  5);
+  do {
+    state ^= (state << 13);
+    state ^= (state >> 17);
+    state ^= (state <<  5);
+  } while(state & 0x0000ffff > 10000);
   *a = state;
   return state;
 }
@@ -289,12 +290,13 @@ static int tun_read(int tun_fd, char *buf, size_t len) {
 #endif
 
 
-int vpn_raw_alloc(int is_server, const char *host, int port,
+int vpn_raw_alloc(int is_server, int tcp_mode, const char *host, int port,
                   struct sockaddr *addr, socklen_t* addrlen) {
   struct addrinfo hints;
   struct addrinfo *res;
   int sock, r;
   struct sock_fprog bpf;
+  struct sock_filter filter[12];
 
   memset(&hints, 0, sizeof(hints));
   hints.ai_socktype = SOCK_STREAM;
@@ -307,7 +309,6 @@ int vpn_raw_alloc(int is_server, const char *host, int port,
   if (res->ai_family == AF_INET)
     ((struct sockaddr_in *)res->ai_addr)->sin_port = htons(port);
   else if (res->ai_family == AF_INET6) {
-    is_ipv6 = 1;
     ((struct sockaddr_in6 *)res->ai_addr)->sin6_port = htons(port);
   }
   else {
@@ -319,7 +320,12 @@ int vpn_raw_alloc(int is_server, const char *host, int port,
   memcpy(addr, res->ai_addr, res->ai_addrlen);
   *addrlen = res->ai_addrlen;
 
-  if (-1 == (sock = socket(res->ai_family, SOCK_RAW, IPPROTO_TCP))) {
+  if (tcp_mode)
+    sock = socket(res->ai_family, SOCK_RAW, IPPROTO_TCP);
+  else
+    sock = socket(res->ai_family, SOCK_RAW, IPPROTO_UDP);
+
+  if (-1 == sock) {
     err("socket");
     errf("can not create RAW socket");
     freeaddrinfo(res);
@@ -327,85 +333,54 @@ int vpn_raw_alloc(int is_server, const char *host, int port,
   }
 
   if (res->ai_family == AF_INET) {
-  	if (is_server) {
-  		struct sock_filter filter[] = {
-			BPF_STMT(BPF_LDX + BPF_B + BPF_MSH, 0),				//packet header len
-			BPF_STMT(BPF_LD + BPF_H + BPF_IND, 2),				//load dst port
-			BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, 0, 1, port),
-			BPF_STMT(BPF_RET + BPF_K, 0x0000ffff),
-			BPF_STMT(BPF_RET + BPF_K, 0),
-		};
-		bpf.len = ARRAY_SIZE(filter);
-		bpf.filter = filter;
-		bpf.filter = filter;
-		if (-1 == setsockopt(sock, SOL_SOCKET, SO_ATTACH_FILTER, &bpf, sizeof(bpf))) {
-			err("filter");
-			errf("can not attach filter");
-			freeaddrinfo(res);
-			return -1;
-		}
-	} else {
-		struct sock_filter filter[] = {
-			BPF_STMT(BPF_LDX + BPF_B + BPF_MSH, 0),				//packet header len
-			BPF_STMT(BPF_LD + BPF_H + BPF_IND, 0),				//load src port
-			BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, port, 0, 3),
-      		BPF_STMT(BPF_LD + BPF_W + BPF_ABS, 12),				//load ip
-      		BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, ntohl(((struct sockaddr_in *)res->ai_addr)->sin_addr.s_addr), 0, 1),
-      		BPF_STMT(BPF_RET + BPF_K, 0x0000ffff),
-      		BPF_STMT(BPF_RET + BPF_K, 0),
-      	};
-      	bpf.len = ARRAY_SIZE(filter);
-      	bpf.filter = filter;
-      	bpf.filter = filter;
-      	if (-1 == setsockopt(sock, SOL_SOCKET, SO_ATTACH_FILTER, &bpf, sizeof(bpf))) {
-      		err("filter");
-      		errf("can not attach filter");
-      		freeaddrinfo(res);
-      		return -1;
-      	}
-      }
-  } else if (res->ai_family == AF_INET6) {
-  	if (is_server) {
-  		struct sock_filter filter[] = {
-  			BPF_STMT(BPF_LD + BPF_H + BPF_ABS, 42),				//load dst port
-  			BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, port, 0, 1),
-  			BPF_STMT(BPF_RET + BPF_K, 0x0000ffff),
-  			BPF_STMT(BPF_RET + BPF_K, 0),
-  		};
-  		bpf.len = ARRAY_SIZE(filter);
-  		bpf.filter = filter;
-  		if (-1 == setsockopt(sock, SOL_SOCKET, SO_ATTACH_FILTER, &bpf, sizeof(bpf))) {
-  			err("filter");
-  			errf("can not attach filter");
-  			freeaddrinfo(res);
-  			return -1;
-  		}
-  	} else {
-  		uint32_t *ipaddr = (uint32_t *)&(((struct sockaddr_in6 *)res->ai_addr)->sin6_addr.s6_addr);
-  		struct sock_filter filter[] = {
-  			BPF_STMT(BPF_LD + BPF_H + BPF_ABS, 40),						//load src port
-  			BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, port, 0, 9),
-  			BPF_STMT(BPF_LD+BPF_W+BPF_ABS, 8),							//load ip
-  			BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K,ntohl(*ipaddr), 0, 7),
-  			BPF_STMT(BPF_LD+BPF_W+BPF_ABS, 16),							//load ip
-  			BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K,ntohl(*(ipaddr + 1)), 0, 5),
-  			BPF_STMT(BPF_LD+BPF_W+BPF_ABS, 24),							//load ip
-  			BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K,ntohl(*(ipaddr + 2)), 0, 3),
-  			BPF_STMT(BPF_LD+BPF_W+BPF_ABS, 32),							//load ip
-  			BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K,ntohl(*(ipaddr + 3)), 0, 1),
-  			BPF_STMT(BPF_RET + BPF_K, 0x0000ffff),
-  			BPF_STMT(BPF_RET + BPF_K, 0),
-  		};
-  		bpf.len = ARRAY_SIZE(filter);
-  		bpf.filter = filter;
-  		bpf.filter = filter;
-  		if (-1 == setsockopt(sock, SOL_SOCKET, SO_ATTACH_FILTER, &bpf, sizeof(bpf))) {
-  			err("filter");
-  			errf("can not attach filter");
-  			freeaddrinfo(res);
-  			return -1;
-  		}
-  	}
+    if (is_server) {
+      filter[0] = (struct sock_filter) BPF_STMT(BPF_LDX + BPF_B + BPF_MSH, 0);
+      filter[1] = (struct sock_filter) BPF_STMT(BPF_LD + BPF_H + BPF_IND, 2);
+      filter[2] = (struct sock_filter) BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, 0, 1, port);
+      filter[3] = (struct sock_filter) BPF_STMT(BPF_RET + BPF_K, 0x0000ffff);
+      filter[4] = (struct sock_filter) BPF_STMT(BPF_RET + BPF_K, 0);
+      bpf.len = 5;
+    } else {
+      filter[0] =  (struct sock_filter) BPF_STMT(BPF_LDX + BPF_B + BPF_MSH, 0);
+      filter[1] =  (struct sock_filter) BPF_STMT(BPF_LD + BPF_H + BPF_IND, 0);
+      filter[2] =  (struct sock_filter) BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, port, 0, 3);
+      filter[3] =  (struct sock_filter) BPF_STMT(BPF_LD + BPF_W + BPF_ABS, 12);
+      filter[4] =  (struct sock_filter) BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, ntohl(((struct sockaddr_in *)res->ai_addr)->sin_addr.s_addr), 0, 1);
+      filter[5] =  (struct sock_filter) BPF_STMT(BPF_RET + BPF_K, 0x0000ffff);
+      filter[6] =  (struct sock_filter) BPF_STMT(BPF_RET + BPF_K, 0);
+      bpf.len = 7;
+    }
+  }else if (res->ai_family == AF_INET6) {
+    if (is_server) {
+      filter[0] =  (struct sock_filter) BPF_STMT(BPF_LD + BPF_H + BPF_ABS, 42);
+      filter[1] =  (struct sock_filter) BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, port, 0, 1);
+      filter[2] =  (struct sock_filter) BPF_STMT(BPF_RET + BPF_K, 0x0000ffff);
+      filter[3] =  (struct sock_filter) BPF_STMT(BPF_RET + BPF_K, 0);
+      bpf.len = 4;
+    } else {
+      uint32_t *ipaddr = (uint32_t *)&(((struct sockaddr_in6 *)res->ai_addr)->sin6_addr.s6_addr);
+      filter[0] =  (struct sock_filter) BPF_STMT(BPF_LD + BPF_H + BPF_ABS, 40);
+      filter[1] =  (struct sock_filter) BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, port, 0, 9);
+      filter[2] =  (struct sock_filter) BPF_STMT(BPF_LD+BPF_W+BPF_ABS, 8);
+      filter[3] =  (struct sock_filter) BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K,ntohl(*ipaddr), 0, 7);
+      filter[4] =  (struct sock_filter) BPF_STMT(BPF_LD+BPF_W+BPF_ABS, 16);
+      filter[5] =  (struct sock_filter) BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K,ntohl(*(ipaddr + 1)), 0, 5);
+      filter[6] =  (struct sock_filter) BPF_STMT(BPF_LD+BPF_W+BPF_ABS, 24);
+      filter[7] =  (struct sock_filter) BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K,ntohl(*(ipaddr + 2)), 0, 3);
+      filter[8] =  (struct sock_filter) BPF_STMT(BPF_LD+BPF_W+BPF_ABS, 32);
+      filter[9] =  (struct sock_filter) BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K,ntohl(*(ipaddr + 3)), 0, 1);
+      filter[10] = (struct sock_filter) BPF_STMT(BPF_RET + BPF_K, 0x0000ffff);
+      filter[11] = (struct sock_filter) BPF_STMT(BPF_RET + BPF_K, 0);
+      bpf.len = 12;
+    }
+  }
+  bpf.filter = filter;
+
+  if (-1 == setsockopt(sock, SOL_SOCKET, SO_ATTACH_FILTER, &bpf, sizeof(bpf))) {
+    err("filter");
+    errf("can not attach filter");
+    freeaddrinfo(res);
+    return -1;
   }
 
   freeaddrinfo(res);
@@ -534,7 +509,7 @@ int vpn_ctx_init(vpn_ctx_t *ctx, shadowvpn_args_t *args) {
     return -1;
   }
 #endif
-  ctx->sock = vpn_raw_alloc(args->mode == SHADOWVPN_MODE_SERVER, args->server, args->port,
+  ctx->sock = vpn_raw_alloc(args->mode == SHADOWVPN_MODE_SERVER, args->tcp_mode, args->server, args->port,
                                 (struct sockaddr *)&ctx->remote_addr,
                                 &ctx->remote_addrlen);
   if (ctx->sock == -1) {
@@ -557,16 +532,13 @@ int vpn_run(vpn_ctx_t *ctx) {
   logf("VPN started");
 
   fd_set readset;
-  int isv6 = is_ipv6;
   ssize_t r;
   uint32_t rand = 314159265;
   uint16_t c_port, s_port = htons(ctx->args->port); //client port & server port
-
   int mtu = ctx->args->mtu;
-
   int tun = ctx->tun;
   int sock = ctx->sock;
-
+  int tcp_mode = ctx->args->tcp_mode;
  #ifndef TARGET_WIN32
   int control_pipe[2];
   control_pipe[0] = ctx->control_pipe[0];
@@ -575,18 +547,18 @@ int vpn_run(vpn_ctx_t *ctx) {
   int control_fd = ctx->control_fd;
  #endif
 
-  struct sockaddr *remote_addrp = malloc(sizeof(struct sockaddr_storage));
-  remote_addrp = (struct sockaddr *)&ctx->remote_addr;
+  struct sockaddr_storage remote_addr = ctx->remote_addr;
   socklen_t remote_addrlen = ctx->remote_addrlen;
+  struct sockaddr *remote_addrp = (struct sockaddr*)&remote_addr;
+  int is_ipv6 = (remote_addrp->sa_family == AF_INET6)? 1:0;
+  int is_server = (ctx->args->mode == SHADOWVPN_MODE_SERVER)? 1 : 0;
 
   unsigned char *tun_buf = malloc(mtu + SHADOWVPN_ZERO_BYTES);
-  unsigned char *tcp_buf = malloc(4096);
-  struct tcphdr *tcphdr = (struct tcphdr*)tcp_buf;
+  unsigned char *r_buf = malloc(4096);
 
   bzero(tun_buf, SHADOWVPN_ZERO_BYTES);
-  bzero(tcp_buf, SHADOWVPN_ZERO_BYTES);
+  bzero(r_buf, SHADOWVPN_ZERO_BYTES);
 
-  int is_server = (ctx->args->mode == SHADOWVPN_MODE_SERVER)? 1 : 0;
   // we assume that pipe fd is always less than tun and sock fd which are
   // created later
   int max_fd = sock;
@@ -635,20 +607,36 @@ int vpn_run(vpn_ctx_t *ctx) {
           break;
         }
       }
-      crypto_encrypt(tcp_buf + 12, tun_buf, r);
-      if (is_server) {
-        tcphdr->source = s_port;
-        tcphdr->dest = c_port;
-        tcphdr->ack = 1; //avoid report syn flood
-      } else {
-        tcphdr->dest = s_port;
-        tcphdr->source = (uint16_t) xorshift32(&rand);
-        tcphdr->syn = 1; //must be a syn packet
-      }
-      tcphdr->seq = rand;
-      tcphdr->doff = 5;
-      r = sendto(sock, tcp_buf, SHADOWVPN_OVERHEAD_LEN + r + 20, 0,
+      if (tcp_mode) {
+        crypto_encrypt(r_buf + 12, tun_buf, r);
+        struct tcphdr *tcphdr = (struct tcphdr*)r_buf;
+        if (is_server) {
+          tcphdr->source = s_port;
+          tcphdr->dest = c_port;
+          tcphdr->ack = 1;
+        } else {
+          tcphdr->dest = s_port;
+          tcphdr->source = (uint16_t)xorshift32(&rand);
+          tcphdr->syn = 1;
+        }
+        tcphdr->seq = rand;
+        tcphdr->doff = 5;
+        r = sendto(sock, r_buf, SHADOWVPN_OVERHEAD_LEN + r + 20, 0,
                  remote_addrp, remote_addrlen);
+      } else {
+        crypto_encrypt(r_buf, tun_buf, r);
+        struct udphdr *udphdr = (struct udphdr*)r_buf;
+        if (is_server) {
+          udphdr->source = s_port;
+          udphdr->dest = c_port;
+        } else {
+          udphdr->dest = s_port;
+          udphdr->source = (uint16_t)xorshift32(&rand);
+        }
+        udphdr->len = htons(r + 8 + SHADOWVPN_OVERHEAD_LEN);
+        r = sendto(sock, r_buf, SHADOWVPN_OVERHEAD_LEN + r + 8, 0,
+                 remote_addrp, remote_addrlen);
+      }
       if (r == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
           // do nothing
@@ -666,7 +654,7 @@ int vpn_run(vpn_ctx_t *ctx) {
     if (FD_ISSET(sock, &readset)) {
       // only change remote addr if decryption succeeds
       int decrypt;
-      r = recv(sock, tcp_buf, 4096, 0);
+      r = recv(sock, r_buf, 4096, 0);
       if (r == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
           // do nothing
@@ -683,33 +671,41 @@ int vpn_run(vpn_ctx_t *ctx) {
       if (r == 0)
         continue;
 
-      if (!isv6) {
-        decrypt = crypto_decrypt(tun_buf, tcp_buf + 32,
-                              r - SHADOWVPN_OVERHEAD_LEN - 40);
-        r = r - SHADOWVPN_OVERHEAD_LEN - 40;
+      if (tcp_mode) {
+        if (!is_ipv6) {//Maybe we will encounter some packets
+                       //that have extra ip header options?
+          decrypt = crypto_decrypt(tun_buf, r_buf + 32,
+                                r - SHADOWVPN_OVERHEAD_LEN - 40);
+          r = r - SHADOWVPN_OVERHEAD_LEN - 40;
+        } else {
+          decrypt = crypto_decrypt(tun_buf, r_buf + 52,
+                                r - SHADOWVPN_OVERHEAD_LEN - 60);
+          r = r - SHADOWVPN_OVERHEAD_LEN - 60;
+        }
       } else {
-        decrypt = crypto_decrypt(tun_buf, tcp_buf + 52,
-                              r - SHADOWVPN_OVERHEAD_LEN - 60);
-        r = r - SHADOWVPN_OVERHEAD_LEN - 60;
+        if (!is_ipv6) {
+          decrypt = crypto_decrypt(tun_buf, r_buf + 20,
+                                r - SHADOWVPN_OVERHEAD_LEN - 28);
+          r = r - SHADOWVPN_OVERHEAD_LEN - 28;
+        } else {
+          decrypt = crypto_decrypt(tun_buf, r_buf + 40,
+                                r - SHADOWVPN_OVERHEAD_LEN - 48);
+          r = r - SHADOWVPN_OVERHEAD_LEN - 48;
+        }
       }
 
       if (-1 == decrypt) {
         errf("dropping invalid packet, maybe wrong password");
       } else {
         if (is_server) {
-          // if we are running a server, update server address from
-          if (!isv6) {
+          if (!is_ipv6) {
             struct sockaddr_in *temp = (struct sockaddr_in *)remote_addrp;
-            //temp->sin_family = AF_INET; //enable this after enabling dual stack
-            temp->sin_addr.s_addr = ((struct iphdr *)(tcp_buf))->saddr;
-            c_port = ((struct tcphdr *)(tcp_buf + 20))->source;
-            //remote_addrlen = sizeof(struct sockaddr_in);
+            temp->sin_addr.s_addr = ((struct iphdr *)(r_buf))->saddr;
+            c_port = ((struct tcphdr *)(r_buf + 20))->source;
           } else {
             struct sockaddr_in6 *temp = (struct sockaddr_in6 *)remote_addrp;
-            //temp->sin6_family = AF_INET6;
-            memcpy(temp->sin6_addr.s6_addr, ((struct ip6_hdr *)(tcp_buf))->ip6_src.s6_addr, 16);
-            c_port = ((struct tcphdr *)(tcp_buf + 40))->source;
-            //remote_addrlen = sizeof(struct sockaddr_in6);
+            memcpy(temp->sin6_addr.s6_addr, ((struct ip6_hdr *)(r_buf))->ip6_src.s6_addr, 16);
+            c_port = ((struct tcphdr *)(r_buf + 40))->source;
           }
         }
         if (-1 == tun_write(tun, tun_buf + 32, r)) {
@@ -727,7 +723,7 @@ int vpn_run(vpn_ctx_t *ctx) {
     }
   }
   free(tun_buf);
-  free(tcp_buf);
+  free(r_buf);
 
   shell_down(ctx->args);
 
