@@ -48,20 +48,21 @@
 
 #ifdef TARGET_LINUX
 #include <linux/if_tun.h>
+//for raw packet
+#include <netinet/tcp.h>
+#include <netinet/udp.h>
+#include <netinet/ip6.h>
+#include <netinet/ip.h>
+//bpf filter
+#include <netinet/if_ether.h>
+#include <linux/filter.h>
 #endif
 
 #ifdef TARGET_FREEBSD
 #include <net/if_tun.h>
 #endif
 
-//for raw packet
-#include <netinet/tcp.h>
-  #include <netinet/udp.h>
-#include <netinet/ip6.h>
-#include <netinet/ip.h>
-//bpf filter
-#include <linux/if_ether.h>
-#include <linux/filter.h>
+
 
 /*
  * Darwin & OpenBSD use utun which is slightly
@@ -107,7 +108,7 @@ uint32_t xorshift32(uint32_t *a) {
     state ^= (state << 13);
     state ^= (state >> 17);
     state ^= (state <<  5);
-  } while(state & 0x0000ffff > 10000);
+  } while(state & 0x0000ffff < 10000);
   *a = state;
   return state;
 }
@@ -336,7 +337,7 @@ int vpn_raw_alloc(int is_server, int tcp_mode, const char *host, int port,
     if (is_server) {
       filter[0] = (struct sock_filter) BPF_STMT(BPF_LDX + BPF_B + BPF_MSH, 0);
       filter[1] = (struct sock_filter) BPF_STMT(BPF_LD + BPF_H + BPF_IND, 2);
-      filter[2] = (struct sock_filter) BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, 0, 1, port);
+      filter[2] = (struct sock_filter) BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, port, 0, 1);
       filter[3] = (struct sock_filter) BPF_STMT(BPF_RET + BPF_K, 0x0000ffff);
       filter[4] = (struct sock_filter) BPF_STMT(BPF_RET + BPF_K, 0);
       bpf.len = 5;

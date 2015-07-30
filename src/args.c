@@ -131,7 +131,7 @@ static int process_key_value(shadowvpn_args_t *args, const char *key,
     if (strcmp("server+tcp", value) == 0) {
       args->mode = SHADOWVPN_MODE_SERVER;
       args->tcp_mode = 1;
-    } else if (strcmp("server+tcp", value) == 0) {
+    } else if (strcmp("server+udp", value) == 0) {
       args->mode = SHADOWVPN_MODE_SERVER;
       args->tcp_mode = 0;
     } else if (strcmp("client+tcp", value) == 0) {
